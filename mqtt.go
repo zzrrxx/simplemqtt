@@ -23,23 +23,6 @@ const (
 	pktDisconnect  = 14
 )
 
-var mqttPktNames = []string{
-	"CONNECT",
-	"CONNACK",
-	"PUBLISH",
-	"PUBACK",
-	"PUBREC",
-	"PUBREL",
-	"PUBCOMP",
-	"SUBSCRIBE",
-	"SUBACK",
-	"UNSUBSCRIBE",
-	"UNSUBACK",
-	"PINGREQ",
-	"PINGRESP",
-	"DISCONNECT",
-}
-
 type Config struct {
 	ClientId     string
 	User         string
@@ -106,7 +89,7 @@ func (this *MQTT) Connect(server string) error {
 	if err != nil {
 		return err
 	}
-	if err = this.ensurePackageType(pktConnAck, b); err != nil {
+	if err = this.validatePackageType(pktConnAck, b); err != nil {
 		return err
 	}
 	return nil
@@ -169,7 +152,7 @@ func (this *MQTT) Publish(msg *Message) error {
 		if err != nil {
 			return err
 		}
-		if err = this.ensurePackageType(pktPubAck, b); err != nil {
+		if err = this.validatePackageType(pktPubAck, b); err != nil {
 			return err
 		}
 		return nil
@@ -178,11 +161,11 @@ func (this *MQTT) Publish(msg *Message) error {
 		if err != nil {
 			return err
 		}
-		if err = this.ensurePackageType(pktPubRec, b); err != nil {
+		if err = this.validatePackageType(pktPubRec, b); err != nil {
 			return err
 		}
 		if remainingLength != 2 {
-			return errors.New(this.pktName(pktPubRel) + " size is not correct")
+			return errors.New(pktName(pktPubRel) + " size is not correct")
 		}
 
 		pubRelData := this.buildControlPacket(pktPubRel, 0, pktId)
@@ -194,7 +177,7 @@ func (this *MQTT) Publish(msg *Message) error {
 		if err != nil {
 			return err
 		}
-		if err = this.ensurePackageType(pktPubComp, b); err != nil {
+		if err = this.validatePackageType(pktPubComp, b); err != nil {
 			return err
 		}
 	}
@@ -216,7 +199,7 @@ func (this *MQTT) Subscribe(topicFilters []string, requestedQoSs []byte) (ackedQ
 	if err != nil {
 		return nil, err
 	}
-	if err = this.ensurePackageType(pktSubAck, b); err != nil {
+	if err = this.validatePackageType(pktSubAck, b); err != nil {
 		return nil, err
 	}
 
@@ -245,7 +228,7 @@ func (this *MQTT) Unsubscribe(topicFilters []string) error {
 	if err != nil {
 		return err
 	}
-	if err = this.ensurePackageType(pktUnSubAck, b); err != nil {
+	if err = this.validatePackageType(pktUnSubAck, b); err != nil {
 		return err
 	}
 
@@ -261,7 +244,7 @@ func (this *MQTT) Ping() error {
 	if err != nil {
 		return err
 	}
-	if err = this.ensurePackageType(pktPingResp, b); err != nil {
+	if err = this.validatePackageType(pktPingResp, b); err != nil {
 		return err
 	}
 	return nil
@@ -272,7 +255,7 @@ func (this *MQTT) ReceiveMessage(timeoutMS int) (*Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = this.ensurePackageType(pktPublish, b); err != nil {
+	if err = this.validatePackageType(pktPublish, b); err != nil {
 		return nil, err
 	}
 
@@ -326,7 +309,7 @@ func (this *MQTT) ReceiveMessage(timeoutMS int) (*Message, error) {
 		if err != nil {
 			return msg, err
 		}
-		if err = this.ensurePackageType(pktPubRel, b); err != nil {
+		if err = this.validatePackageType(pktPubRel, b); err != nil {
 			return msg, err
 		}
 		pkt = this.buildControlPacket(pktPubComp, 0, encodeInt16(int(msg.PacketIdentifier)))
@@ -489,11 +472,11 @@ func (this *MQTT) validateConfig() error {
 	}
 	return nil
 }
-func (this *MQTT) ensurePackageType(expectedType byte, pktFirstByte byte) error {
+func (this *MQTT) validatePackageType(expectedType byte, pktFirstByte byte) error {
 	pktType := (pktFirstByte & 0xF0) >> 4
 	if pktType != expectedType {
 		// TODO: drop the connection
-		return errors.New("Invalid packet: expected packet " + this.pktName(expectedType) + ", but received packet " + this.pktName(pktType))
+		return errors.New("Invalid packet: expected packet " + pktName(expectedType) + ", but received packet " + pktName(pktType))
 	}
 	return nil
 }
@@ -506,18 +489,31 @@ func (this *MQTT) validateQoS(val byte) error {
 func (this *MQTT) validateTopicFilter(val string) error {
 	return nil // TODO
 }
-func (this *MQTT) pktName(typ byte) string {
-	if typ >= pktConnect && typ <= pktDisconnect {
-		return mqttPktNames[typ]
-	}
-	return "UNKNOWN(" + strconv.FormatInt(int64(typ), 10) + ")"
-}
 func (this *MQTT) nextPacketId() int {
 	ret := this._nextPktId
 	this._nextPktId++
 	return int(ret)
 }
 
+func pktName(typ byte) string {
+	switch typ {
+	case pktConnect:     return "CONNECT"
+	case pktConnAck:     return "CONNACK"
+	case pktPublish:     return "PUBLISH"
+	case pktPubAck:      return "PUBACK"
+	case pktPubRec:      return "PUBREC"
+	case pktPubRel:      return "PUBREL"
+	case pktPubComp:     return "PUBCOMP"
+	case pktSubscribe:   return "SUBSCRIBE"
+	case pktSubAck:      return "SUBACK"
+	case pktUnsubscribe: return "UNSUBSCRIBE"
+	case pktUnSubAck:    return "UNSUBACK"
+	case pktPingReq:     return "PINGREQ"
+	case pktPingResp:    return "PINGRESP"
+	case pktDisconnect:  return "DISCONNECT"
+	default:             return "UNKNOWN(" + strconv.FormatInt(int64(typ), 10) + ")"
+	}
+}
 func encodeInt16(val int) []byte {
 	b1 := (val & 0xFF00) >> 8
 	b2 := (val & 0x00FF)
@@ -531,7 +527,7 @@ func decodeInt16(val []byte) (int, error) {
 	if len(val) < 2 {
 		return 0, errors.New("Invalid packet identifier bytes length")
 	}
-	return int(val[0] << 8) | int(val[1]), nil
+	return int(val[0]) << 8 | int(val[1]), nil
 }
 func decodeInt16String(val []byte) (string, error) {
 	l, err := decodeInt16(val)
