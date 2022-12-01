@@ -115,12 +115,7 @@ func (this *MQTT) Disconnect() error {
 	return nil
 }
 func (this *MQTT) Publish(msg *Message) error {
-	if len(msg.TopicName) == 0 {
-		return errors.New("TopicName cannot be empty")
-	}
-	if err := this.validateQoS(msg.QoS); err != nil {
-		return err
-	}
+	if err := this.validateMessage(msg); err != nil { return err }
 
 	var flags byte = 0
 	if msg.RETAIN {
@@ -259,11 +254,7 @@ func (this *MQTT) ReceiveMessage(timeoutMS int) (*Message, error) {
 		return nil, err
 	}
 
-	msg := &Message{
-		//TopicName:        ,
-		//Data:             nil,
-		//PacketIdentifier: 0,
-	}
+	msg := &Message{}
 
 	if b&0x01 != 0 {
 		msg.RETAIN = true
@@ -273,10 +264,6 @@ func (this *MQTT) ReceiveMessage(timeoutMS int) (*Message, error) {
 	}
 	if b&0x08 != 0 {
 		msg.DUP = true
-	}
-
-	if err = this.validateQoS(msg.QoS); err != nil {
-		return nil, err
 	}
 
 	if msg.TopicName, err = decodeInt16String(payload); err != nil {
@@ -317,6 +304,7 @@ func (this *MQTT) ReceiveMessage(timeoutMS int) (*Message, error) {
 			return msg, err
 		}
 	}
+	if err = this.validateMessage(msg); err != nil { return msg, err }
 	return msg, nil
 }
 
@@ -488,6 +476,12 @@ func (this *MQTT) validateQoS(val byte) error {
 }
 func (this *MQTT) validateTopicFilter(val string) error {
 	return nil // TODO
+}
+func (this *MQTT) validateMessage(msg *Message) error {
+	if msg == nil { return errors.New("Empty message") }
+	if err := this.validateQoS(msg.QoS); err != nil { return err }
+	if len(msg.TopicName) == 0 { return errors.New("Message's Topic is empty") }
+	return nil
 }
 func (this *MQTT) nextPacketId() int {
 	ret := this._nextPktId
