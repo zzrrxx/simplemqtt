@@ -24,6 +24,8 @@ const (
 )
 
 type Config struct {
+	Server       string // server address: xxx.xxx.xxx.xxx:xxxxx
+
 	ClientId     string
 	User         string
 	Password     string
@@ -65,12 +67,12 @@ func NewMQTT(cfg *Config) *MQTT {
 	}
 }
 
-func (this *MQTT) Connect(server string) error {
+func (this *MQTT) Connect() error {
 	var err error
 	if err = this.validateConfig(); err != nil {
 		return err
 	}
-	if this._raddr, err = net.ResolveTCPAddr("tcp", server); err != nil {
+	if this._raddr, err = net.ResolveTCPAddr("tcp", this.Config.Server); err != nil {
 		return err
 	}
 	if this._conn, err = net.DialTCP("tcp", nil, this._raddr); err != nil {
@@ -449,6 +451,9 @@ func (this *MQTT) mustWrite(buf []byte) error {
 	return nil
 }
 func (this *MQTT) validateConfig() error {
+	if len(this.Config.Server) == 0 {
+		return errors.New("Server address is required")
+	}
 	if len(this.Config.ClientId) == 0 {
 		return errors.New("ClientId is required")
 	}
