@@ -1,6 +1,7 @@
 package simplemqtt
 
 import (
+	"crypto/tls"
 	"errors"
 	"net"
 	"strconv"
@@ -24,6 +25,9 @@ const (
 )
 
 type Config struct {
+
+	TlsConfig    *tls.Config
+
 	Server       string // server address: xxx.xxx.xxx.xxx:xxxxx
 
 	ClientId     string
@@ -52,9 +56,6 @@ type MQTT struct {
 	Config     *Config
 
 	_conn      net.Conn
-	_raddr     *net.TCPAddr
-	_laddr     *net.TCPAddr
-
 	_nextPktId int16
 }
 
@@ -62,28 +63,18 @@ func NewMQTT(cfg *Config) *MQTT {
 	return &MQTT{
 		Config: cfg,
 		_conn:  nil,
-		_raddr: nil,
-		_laddr: nil,
 	}
 }
 
 func (this *MQTT) Connect() error {
 	var err error
-	if err = this.validateConfig(); err != nil {
-		return err
-	}
-	if this._raddr, err = net.ResolveTCPAddr("tcp", this.Config.Server); err != nil {
-		return err
-	}
-	if this._conn, err = net.DialTCP("tcp", nil, this._raddr); err != nil {
-		return err
-	}
+	if err = this.transportConnect(); err != nil { return err }
 
 	data, err := this.buildPacketConnect()
 	if err != nil {
 		return err
 	}
-	if err = this.mustWrite(data); err != nil {
+	if err = this.transportWrite(data); err != nil {
 		return err
 	}
 
@@ -101,19 +92,12 @@ func (this *MQTT) Disconnect() error {
 		return errors.New("Not connected")
 	}
 
-	defer func() {
-		this._conn = nil
-	}()
-
 	data := this.buildControlPacket(pktDisconnect, 0, nil)
-	if err := this.mustWrite(data); err != nil {
+	if err := this.transportWrite(data); err != nil {
 		return err
 	}
 
-	if err := this._conn.Close(); err != nil {
-		return err
-	}
-
+	if err := this.transportDisconnect(); err != nil { return err }
 	return nil
 }
 func (this *MQTT) Publish(msg *Message) error {
@@ -138,7 +122,7 @@ func (this *MQTT) Publish(msg *Message) error {
 	data = append(data, msg.Data...)
 	data = this.buildControlPacket(pktPublish, flags, data)
 
-	if err := this.mustWrite(data); err != nil {
+	if err := this.transportWrite(data); err != nil {
 		return err
 	}
 
@@ -166,7 +150,7 @@ func (this *MQTT) Publish(msg *Message) error {
 		}
 
 		pubRelData := this.buildControlPacket(pktPubRel, 0, pktId)
-		if err = this.mustWrite(pubRelData); err != nil {
+		if err = this.transportWrite(pubRelData); err != nil {
 			return err
 		}
 
@@ -188,7 +172,7 @@ func (this *MQTT) Subscribe(topicFilters []string, requestedQoSs []byte) (ackedQ
 	}
 	data = this.buildControlPacket(pktSubscribe, 0, data)
 
-	if err = this.mustWrite(data); err != nil {
+	if err = this.transportWrite(data); err != nil {
 		return nil, err
 	}
 
@@ -217,7 +201,7 @@ func (this *MQTT) Unsubscribe(topicFilters []string) error {
 	}
 	data = this.buildControlPacket(pktUnsubscribe, 0, data)
 
-	if err = this.mustWrite(data); err != nil {
+	if err = this.transportWrite(data); err != nil {
 		return err
 	}
 
@@ -233,7 +217,7 @@ func (this *MQTT) Unsubscribe(topicFilters []string) error {
 }
 func (this *MQTT) Ping() error {
 	data := this.buildControlPacket(pktPingReq, 0, nil)
-	if err := this.mustWrite(data); err != nil {
+	if err := this.transportWrite(data); err != nil {
 		return err
 	}
 
@@ -286,12 +270,12 @@ func (this *MQTT) ReceiveMessage(timeoutMS int) (*Message, error) {
 		return msg, nil
 	} else if msg.QoS == 1 {
 		pkt := this.buildControlPacket(pktPubAck, 0, encodeInt16(int(msg.PacketIdentifier)))
-		if err = this.mustWrite(pkt); err != nil {
+		if err = this.transportWrite(pkt); err != nil {
 			return msg, err
 		}
 	} else if msg.QoS == 2 {
 		pkt := this.buildControlPacket(pktPubRec, 0, encodeInt16(int(msg.PacketIdentifier)))
-		if err = this.mustWrite(pkt); err != nil {
+		if err = this.transportWrite(pkt); err != nil {
 			return msg, err
 		}
 		b, _, payload, err = this.readControlPacket()
@@ -302,12 +286,57 @@ func (this *MQTT) ReceiveMessage(timeoutMS int) (*Message, error) {
 			return msg, err
 		}
 		pkt = this.buildControlPacket(pktPubComp, 0, encodeInt16(int(msg.PacketIdentifier)))
-		if err = this.mustWrite(pkt); err != nil {
+		if err = this.transportWrite(pkt); err != nil {
 			return msg, err
 		}
 	}
 	if err = this.validateMessage(msg); err != nil { return msg, err }
 	return msg, nil
+}
+
+
+func (this *MQTT) transportConnect() error {
+	var err error
+	if err = this.validateConfig(); err != nil {
+		return err
+	}
+
+	if this.Config.TlsConfig != nil {
+		if this._conn, err = tls.Dial("tcp", this.Config.Server, this.Config.TlsConfig); err != nil { return err }
+	} else {
+		if this._conn, err = net.Dial("tcp", this.Config.Server); err != nil { return err }
+	}
+
+	return nil
+}
+func (this *MQTT) transportDisconnect() error {
+	if this._conn == nil { return nil }
+	defer func() {
+		this._conn = nil
+	}()
+	return this._conn.Close()
+}
+func (this *MQTT) transportRead(buf []byte, length int) error {
+	lenRead := 0
+	for lenRead < length {
+		cnt, err := this._conn.Read(buf[lenRead:])
+		if err != nil {
+			return err
+		}
+		lenRead += cnt
+	}
+	return nil
+}
+func (this *MQTT) transportWrite(buf []byte) error {
+	lenWrite := 0
+	for lenWrite < len(buf) {
+		cnt, err := this._conn.Write(buf[lenWrite:])
+		if err != nil {
+			return err
+		}
+		lenWrite += cnt
+	}
+	return nil
 }
 
 func (this *MQTT) buildPacketConnect() ([]byte, error) {
@@ -404,14 +433,14 @@ func (this *MQTT) readControlPacket() (firstByte byte, remainingLength int, payl
 	ret := make([]byte, 2)
 
 	// all mqtt packets have at least 2 bytes
-	if err = this.mustRead(ret, 2); err != nil {
+	if err = this.transportRead(ret, 2); err != nil {
 		return
 	}
 	firstByte = ret[0]
 
 	for ret[len(ret)-1]&0x80 != 0 {
 		b := []byte{0}
-		if err = this.mustRead(b, 1); err != nil {
+		if err = this.transportRead(b, 1); err != nil {
 			return
 		}
 		ret = append(ret, b[0])
@@ -422,34 +451,13 @@ func (this *MQTT) readControlPacket() (firstByte byte, remainingLength int, payl
 	}
 
 	payload = make([]byte, remainingLength)
-	if err = this.mustRead(payload, remainingLength); err != nil {
+	if err = this.transportRead(payload, remainingLength); err != nil {
 		return
 	}
 	return
 }
 
-func (this *MQTT) mustRead(buf []byte, length int) error {
-	lenRead := 0
-	for lenRead < length {
-		cnt, err := this._conn.Read(buf[lenRead:])
-		if err != nil {
-			return err
-		}
-		lenRead += cnt
-	}
-	return nil
-}
-func (this *MQTT) mustWrite(buf []byte) error {
-	lenWrite := 0
-	for lenWrite < len(buf) {
-		cnt, err := this._conn.Write(buf[lenWrite:])
-		if err != nil {
-			return err
-		}
-		lenWrite += cnt
-	}
-	return nil
-}
+
 func (this *MQTT) validateConfig() error {
 	if len(this.Config.Server) == 0 {
 		return errors.New("Server address is required")
